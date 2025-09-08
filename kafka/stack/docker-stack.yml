@@ -1,0 +1,146 @@
+version: "3.8"
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - /home/jake_morrison/kafka-docker/data/zookeeper:/var/lib/zookeeper
+    deploy:
+      placement:
+        constraints:
+          - node.labels.swarm_node == worker
+
+    networks:
+      - external-connect-overlay
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    ports:
+      - "29092:29092"
+
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://10.0.0.210:29092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_MESSAGE_MAX_BYTES: 524288000
+    volumes:
+      - /home/jake_morrison/kafka-docker/data/kafka:/var/lib/kafka/data
+
+    depends_on:
+      - zookeeper
+    deploy:
+      placement:
+        constraints:
+          - node.labels.swarm_node == worker
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 10G
+
+
+    networks:
+      - external-connect-overlay
+
+
+  kafka-connect:
+    image: kafka-connect-custom:latest
+
+    ports:
+      - "8083:8083"
+
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: "kafka:9092"
+      CONNECT_REST_PORT: 8083
+      CONNECT_REST_ADVERTISED_HOST_NAME: "localhost"
+      CONNECT_GROUP_ID: "clickhouse-connect-group"
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_CONFIG_STORAGE_TOPIC: "connect-configs"
+      CONNECT_OFFSET_STORAGE_TOPIC: "connect-offsets"
+      CONNECT_STATUS_STORAGE_TOPIC: "connect-status"
+      CONNECT_KEY_CONVERTER: "org.apache.kafka.connect.storage.StringConverter"
+      CONNECT_VALUE_CONVERTER: "org.apache.kafka.connect.storage.StringConverter"
+      CONNECT_PLUGIN_PATH: "/usr/share/java,/etc/kafka-connect/jars"
+      KAFKA_HEAP_OPTS: "-Xms1G -Xmx4G"
+    volumes:
+      - /home/jake_morrison/kafka-docker/connect-plugins:/etc/kafka-connect/jars
+    configs:
+      - source: clickhouse-sink.json
+        target: /etc/kafka-connect/clickhouse-sink.json
+      - source: connect-log4j.properties
+        target: /etc/cp-base-new/log4j.properties
+    depends_on:
+      - kafka
+    deploy:
+      placement:
+        constraints:
+          - node.labels.swarm_node == worker
+      resources:
+        limits:
+          cpus: '5.0'
+          memory: 10G
+
+    networks:
+      - external-connect-overlay
+
+
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - kafka
+      - kafka-connect
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+     "
+     echo 'Waiting for Kafka broker...' &&
+     until kafka-topics --bootstrap-server kafka:9092 --list > /dev/null 2>&1; do
+      echo 'Kafka not ready, waiting...';
+      sleep 5;
+     done &&
+
+     echo 'Creating topic...' &&
+      kafka-topics --create --topic docker_topic_1 --bootstrap-server kafka:9092 --partitions 20 --replication-factor 1 || echo 'Topic may already exist' &&
+     echo 'Waiting for Kafka Connect...' &&
+     until curl -s http://kafka-connect:8083/connectors > /dev/null; do
+      echo 'Kafka Connect not ready, waiting...';
+      sleep 25;
+     done &&
+     echo 'Registering connector...' &&
+     curl -X POST -H 'Content-Type: application/json' --data @/etc/kafka-connect/clickhouse-sink.json http://kafka-connect:8083/connectors | grep -q 'already exists' || true
+
+     exit 0
+      "
+
+
+    configs:
+      - source: clickhouse-sink.json
+        target: /etc/kafka-connect/clickhouse-sink.json
+    networks:
+      - external-connect-overlay
+    deploy:
+      restart_policy:
+        condition: none
+      placement:
+        constraints:
+          - node.labels.swarm_node == worker
+
+
+configs:
+  clickhouse-sink.json:
+    external: true
+  connect-log4j.properties:
+    external: true
+networks:
+  external-connect-overlay:
+    external: true

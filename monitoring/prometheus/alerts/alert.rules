@@ -1,0 +1,23 @@
+groups:
+- name: clickhouse-alerts
+  rules:
+  # Alert when the ClickHouse scrape target is down
+  - alert: ClickHouseServerDown
+    expr: up{job="clickhouse"} == 0
+    for: 1m
+    labels:
+      severity: critical
+    annotations:
+      summary: "ClickHouse server is down"
+      description: "Prometheus has stopped receiving data from the ClickHouse scrape target."
+
+  # Alert when disk space is low
+  - alert: DiskSpaceLow
+    expr: node_filesystem_free_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"} < 0.1
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Low disk space on server"
+      description: "The server is running out of disk space (less than 10% available)."
+

@@ -1,0 +1,39 @@
+ kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - kafka
+      - kafka-connect
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+     "
+     echo 'Waiting for Kafka broker...' &&
+     until kafka-topics --bootstrap-server kafka:9092 --list > /dev/null 2>&1; do
+      echo 'Kafka not ready, waiting...';
+      sleep 5;
+     done &&
+
+     echo 'Creating topic...' &&
+      kafka-topics --create --topic docker_topic_1 --bootstrap-server kafka:9092 --partitions 20 --replication-factor 1 || echo 'Topic may already exist' &&
+     echo 'Waiting for Kafka Connect...' &&
+     until curl -s http://kafka-connect:8083/connectors > /dev/null; do
+      echo 'Kafka Connect not ready, waiting...';
+      sleep 25;
+     done &&
+     echo 'Registering connector...' &&
+     curl -X POST -H 'Content-Type: application/json' --data @/etc/kafka-connect/clickhouse-sink.json http://kafka-connect:8083/connectors | grep -q 'already exists' || true
+
+     exit 0
+      "
+
+
+    configs:
+      - source: clickhouse-sink.json
+        target: /etc/kafka-connect/clickhouse-sink.json
+    networks:
+      - external-connect-overlay
+    deploy:
+      restart_policy:
+        condition: none
+      placement:
+        constraints:
+          - node.labels.swarm_node == worker

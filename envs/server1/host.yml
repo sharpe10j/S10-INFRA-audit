@@ -1,0 +1,11 @@
+hostname: server1
+ip: 10.0.0.208
+roles: [clickhouse, keeper]
+clickhouse:
+  data_path: /var/lib/clickhouse
+  interserver_http_host: server1
+  ports: { tcp: 9000, http: 8123, interserver_http: 9009 }
+  macros: { shard: shard1, replica: replica1 }
+backups:
+  dir: /backups/clickhouse
+

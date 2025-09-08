@@ -1,0 +1,22 @@
+hostname: server2
+ip: 10.0.0.225
+roles: [clickhouse, docker_manager]   # deploys the stack
+
+clickhouse:
+  data_path: /var/lib/clickhouse
+  interserver_http_host: server2
+  ports: { tcp: 9000, http: 8123, interserver_http: 9009 }
+  macros: { shard: shard1, replica: replica2 }   # adjust if different
+
+backups:
+  dir: /backups/clickhouse
+
+docker:
+  installed: true
+  orchestrator: swarm
+  swarm:
+    enabled: true
+    role: manager
+    stack_name: docker-stack.yml             # use your real stack name
+  deploy_from: /home/jake_morrison/kafka-docker   # path with your stack/compose files
+

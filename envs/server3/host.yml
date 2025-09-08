@@ -1,0 +1,25 @@
+hostname: server3
+ip: 10.0.0.210
+roles: [kafka_broker, connect, zookeeper, docker_worker]   # runs the services
+
+clickhouse: null
+
+kafka:
+  broker_host: server3
+  ports: {  broker: 9092, external_broker: 29092, connect_rest: 8083 }
+  advertised_listeners:
+    - PLAINTEXT://kafka:9092        # internal
+    - PLAINTEXT_HOST://10.0.0.210:29092  # external
+
+docker:
+  installed: true
+  orchestrator: swarm
+  swarm:
+    enabled: true
+    role: worker
+  compose_project_dir: /home/jake_morrison/kafka-docker   # where docker-compose/stack files live
+  containers:
+    - kafka-broker
+    - kafka-connect
+    - zookeeper
+    - kafka-init (registration of connector)
