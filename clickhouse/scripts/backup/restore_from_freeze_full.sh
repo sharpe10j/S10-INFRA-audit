@@ -2,11 +2,20 @@
 set -euo pipefail
 SECONDS=0
 
-CH_HOST="127.0.0.1"
-CH_PORT="9000"
-CH_USER="default"
-CH_PASS=""
-BACKUP_ROOT="/var/lib/clickhouse/backups"
+# ===== Load env (adds configurability; behavior unchanged) =====
+ENV_FILE="${ENV_FILE:-/etc/sharpe10/dev.env}"
+if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
+[[ -f /etc/sharpe10/dev.secrets ]] && { set -a; . /etc/sharpe10/dev.secrets; set +a; }
+[[ -f /etc/sharpe10/dev.local   ]] && { set -a; . /etc/sharpe10/dev.local;   set +a; }
+
+# ===== Config (now overridable via /etc/sharpe10/dev.env) =====
+CH_HOST="${CH_HOST:-${SERVER1_HOST:-127.0.0.1}}"
+CH_PORT="${CH_PORT:-9000}"
+CH_USER="${CH_USER:-default}"
+CH_PASS="${CH_PASS:-${CH_PASSWORD:-}}"
+
+# New default backup location -> /mnt/backup (still overridable)
+BACKUP_ROOT="${BACKUP_ROOT:-/mnt/backup}"
 
 usage() {
   cat <<USAGE
@@ -60,38 +69,26 @@ restore_one_table() {
 
   # rename the table in the DDL to the new target name
   local ddl_restored
-  # Robustly rewrite the first CREATE TABLE line to the target name.
-  # 1) keep the regex in single quotes (backticks are literal)
-  # 2) build the replacement with escaped backticks
   echo "DEBUG: DDL first line (raw): $(printf '%s\n' "$ddl" | head -n1)"
 
   # Match ANY table token after 'CREATE TABLE' (with/without backticks, with/without db prefix)
-  # Examples matched: `db`.`tbl`, db.tbl, `tbl`, tbl
   pattern='^[[:space:]]*CREATE[[:space:]]+TABLE[[:space:]]+[^[:space:]\(]+'
   replace="CREATE TABLE \`$db\`.\`$target\`"
 
-  # Apply just to the FIRST line
   ddl_restored="$(printf '%s\n' "$ddl" | sed -E "1s|$pattern|$replace|")"
 
-  # If the engine is Replicated*MergeTree and the Keeper path contains the original table name,
-  # rewrite the path to use the target table name so we don't collide with the live replica.
+  # If Replicated engine, rewrite Keeper path to use target name
   if grep -qE 'ENGINE[[:space:]]*=[[:space:]]*Replicated' <<< "$ddl_restored"; then
     echo "DEBUG: Detected Replicated engine; rewriting Keeper path to use target name."
-
-    # escape values for regex/sed safety
     re_table=$(printf '%s' "$table"  | sed 's/[.[\*^$()+?{}|/]/\\&/g')
     re_target=$(printf '%s' "$target" | sed 's/[&/]/\\&/g')
 
-  # Case 1: literal path like '/clickhouse/tables/shard1/<table>'
     ddl_restored="$(printf '%s' "$ddl_restored" \
       | sed -E "s#(Replicated[^\\(]*\\([[:space:]]*'/?clickhouse/tables/[^/]+/)${re_table}([/'\"])#\\1${re_target}\\2#g")"
-
-  # Case 2: macros in the path, e.g. '/clickhouse/tables/{shard}/{table}'
     ddl_restored="$(printf '%s' "$ddl_restored" \
       | sed -E "s/\\{table\\}/${re_target}/g; s/\\{database\\}/${db}/g")"
   fi
 
-  # Optional: sanity-print the first line we’ll run
   echo "DDL first line: $(printf '%s\n' "$ddl_restored" | head -n1)"
   echo "DEBUG: target db.table = ${db}.${target}"
   log "Creating table ${db}.${target}"
@@ -110,26 +107,25 @@ restore_one_table() {
     "${CH_CLIENT[@]}" -q "ALTER TABLE \`${db}\`.\`${target}\` ATTACH PART '${part}'"
   done
 }
+
 case "$MODE" in
   table)
     [[ $# -lt 3 ]] && usage
     DB="$1"; TABLE="$2"; LABEL="$3"; TARGET="${4:-${TABLE}_restored}"
     restore_one_table "$DB" "$TABLE" "$LABEL" "$TARGET"
     ;;
-
   database)
     [[ $# -lt 2 ]] && usage
     DB="$1"; LABEL="$2"; SUFFIX="${3:-_restored}"
-    # Restore each table that exists in the snapshot
     mapfile -t SNAP_TABLES < <(find "${BACKUP_ROOT}/${LABEL}/${DB}" -mindepth 1 -maxdepth 1 -type d -printf "%f\n" | sort)
     for t in "${SNAP_TABLES[@]}"; do
       TARGET="${t}${SUFFIX}"
       restore_one_table "$DB" "$t" "$LABEL" "$TARGET" || true
     done
     ;;
-
   *) usage ;;
 esac
 
 log "Restore complete."
 echo "RESTORE elapsed: ${SECONDS}s"
+

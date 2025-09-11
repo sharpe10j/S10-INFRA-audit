@@ -10,6 +10,12 @@
 
 set -euo pipefail
 
+# ====== LOAD ENV (adds only configurability; logic below is unchanged) ======
+ENV_FILE="${ENV_FILE:-/etc/sharpe10/dev.env}"
+if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
+[[ -f /etc/sharpe10/dev.secrets ]] && { set -a; . /etc/sharpe10/dev.secrets; set +a; }
+[[ -f /etc/sharpe10/dev.local   ]] && { set -a; . /etc/sharpe10/dev.local;   set +a; }
+
 if [[ $# -lt 3 || $# -gt 4 ]]; then
   echo "Usage: $0 <database> <table> <YYYY-MM-DD> [TAG]"
   exit 1
@@ -19,26 +25,30 @@ DB="$1"
 TABLE="$2"
 DAY_NY="$3"                                   # required day
 DAY_TAG="$(echo "$DAY_NY" | tr '-' '_')"      # e.g. 2025_01_02
-TAG="${4:-}"                                   # optional explicit tag
+TAG="${4:-}"                                  # optional explicit tag
 
-# ====== CONFIG (match your freeze script) ======
-CH_HOST="127.0.0.1"
-CH_PORT="9000"
-CH_USER="default"
-CH_PASS=""                                     # set if needed
-# Use the key that actually exists for the user who runs the script
-SSH_KEY="/root/.ssh/id_ed25519_server2"   # if you run the script as root
+# ====== CONFIG (now overridable via /etc/sharpe10/dev.env) ======
+# ClickHouse connection
+CH_HOST="${CH_HOST:-${SERVER1_HOST:-127.0.0.1}}"
+CH_PORT="${CH_PORT:-9000}"
+CH_USER="${CH_USER:-default}"
+# Support either CH_PASS (old var) or CH_PASSWORD (env file)
+CH_PASS="${CH_PASS:-${CH_PASSWORD:-}}"
+
+# SSH/remote info
+REMOTE_SSH_USER="${REMOTE_SSH_USER:-jake_morrison}"
+REMOTE_HOST="${REMOTE_HOST:-${SERVER2_HOST:-10.0.0.225}}"
+REMOTE_BACKUP_ROOT="${REMOTE_BACKUP_ROOT:-/backups}"
+REMOTE_BASE="${REMOTE_BASE:-${REMOTE_BACKUP_ROOT}/clickhouse/partitions/${DB}/${TABLE}}"
+
+# Key used to reach server2; keep your original default but allow override
+SSH_KEY="${SSH_KEY:-${SSH_KEY_SERVER2:-/root/.ssh/id_ed25519_server2}}"
 SSH_OPTS="-i ${SSH_KEY} -o StrictHostKeyChecking=accept-new"
 
-
-REMOTE_SSH_USER="jake_morrison"
-REMOTE_HOST="10.0.0.225"
-REMOTE_BASE="/backups/clickhouse/partitions/${DB}/${TABLE}"
-
 # Local ClickHouse roots
-DATA_BASE="/var/lib/clickhouse"                # root path from <path> in config.xml
+DATA_BASE="${DATA_BASE:-/var/lib/clickhouse}"   # root path from <path> in config.xml
 
-# ====== Helpers ======
+# ====== Helpers (unchanged) ======
 CH_CLIENT=(clickhouse-client --host "$CH_HOST" --port "$CH_PORT" --user "$CH_USER" --format TSVRaw)
 [[ -n "$CH_PASS" ]] && CH_CLIENT+=(--password "$CH_PASS")
 
@@ -48,7 +58,7 @@ log(){ echo "[$(date +'%F %T')] $*"; }
 if [[ -z "$TAG" ]]; then
   log "Selecting newest backup tag for day ${DAY_NY} on ${REMOTE_HOST}..."
   # List remote tags and pick the newest that begins with backup_<YYYY_MM_DD>_
-  TAG=$(ssh ${REMOTE_SSH_USER}@${REMOTE_HOST} \
+  TAG=$(ssh ${SSH_OPTS} ${REMOTE_SSH_USER}@${REMOTE_HOST} \
     "bash -lc 'ls -1 ${REMOTE_BASE} | grep -E ^backup_${DAY_TAG}_ | sort | tail -n1'") || true
   if [[ -z "$TAG" ]]; then
     echo "ERROR: No tag found on ${REMOTE_HOST}:${REMOTE_BASE} for day ${DAY_NY} (pattern backup_${DAY_TAG}_*)"
@@ -80,9 +90,7 @@ log "Rsync from ${SRC} -> ${DST}"
 # (If Server2 requires sudo to read that path, use: --rsync-path='sudo rsync')
 sudo rsync -aH -e "ssh ${SSH_OPTS}" "${SRC}" "${DST}"
 
-
-# Capture just-copied part directory names (first-level dirs) with recent mtime
-# This reduces the chance of attaching old, unrelated detached parts.
+# Capture just-copied part directory names (first-level dirs)
 mapfile -t PART_DIRS < <(find "${DETACHED_DIR}" -maxdepth 1 -mindepth 1 -type d -printf "%f\n" | sort)
 
 if [[ ${#PART_DIRS[@]} -eq 0 ]]; then

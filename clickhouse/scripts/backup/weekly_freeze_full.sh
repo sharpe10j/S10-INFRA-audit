@@ -3,19 +3,36 @@ set -euo pipefail
 # timing
 SECONDS=0
 
-# ===== Defaults =====
-BACKUP_ROOT="/var/lib/clickhouse/backups"
+# ===== Load env (adds configurability; behavior unchanged) =====
+ENV_FILE="${ENV_FILE:-/etc/sharpe10/dev.env}"
+if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
+[[ -f /etc/sharpe10/dev.secrets ]] && { set -a; . /etc/sharpe10/dev.secrets; set +a; }
+[[ -f /etc/sharpe10/dev.local   ]] && { set -a; . /etc/sharpe10/dev.local;   set +a; }
 
-CH_HOST="127.0.0.1"
-CH_PORT="9000"
-CH_USER="default"
-CH_PASS=""      # leave empty if not needed
+# ===== Defaults (now overridable via env) =====
+# Local backup tree (native copies)
+BACKUP_ROOT="${BACKUP_ROOT:-/var/lib/clickhouse/backups}"
+
+# ClickHouse connection
+CH_HOST="${CH_HOST:-${SERVER1_HOST:-127.0.0.1}}"
+CH_PORT="${CH_PORT:-9000}"
+CH_USER="${CH_USER:-default}"
+CH_PASS="${CH_PASS:-${CH_PASSWORD:-}}"
+
+# ClickHouse data root (for locating shadows/store)
+CH_DATA_ROOT="${CH_DATA_ROOT:-/var/lib/clickhouse}"
 
 # Optional remote mirror
-SYNC_TO_REMOTE=false
-REMOTE_SSH_USER="jake_morrison"
-REMOTE_HOST="10.0.0.225"
-REMOTE_BASE="/backups/clickhouse/native"   # remote root; script appends /<db>/<label>
+# Set SYNC_TO_REMOTE=true in /etc/sharpe10/dev.env to enable
+SYNC_TO_REMOTE="${SYNC_TO_REMOTE:-false}"
+REMOTE_SSH_USER="${REMOTE_SSH_USER:-jake_morrison}"
+REMOTE_HOST="${REMOTE_HOST:-${SERVER2_HOST:-10.0.0.225}}"
+# Remote native-backup root; script appends /<db>/<label>
+REMOTE_NATIVE_ROOT="${REMOTE_NATIVE_ROOT:-/backups/clickhouse/native}"
+
+# SSH key/options to reach remote (server2)
+SSH_KEY="${SSH_KEY:-${SSH_KEY_SERVER2:-$HOME/.ssh/id_ed25519_server2}}"
+SSH_OPTS="-i ${SSH_KEY} -o StrictHostKeyChecking=accept-new"
 
 usage() {
   cat <<USAGE
@@ -44,9 +61,9 @@ case "$SCOPE" in
 esac
 
 # ===== Normalize label (no dashes, no weird chars) =====
-LABEL="${LABEL//-/_}"                  # convert any '-' to '_'
-LABEL="${LABEL//[^A-Za-z0-9_]/_}"      # keep only [A-Za-z0-9_]
-# ----- metrics: start -----
+LABEL="${LABEL//-/_}"
+LABEL="${LABEL//[^A-Za-z0-9_]/_}"
+
 # Identify the mount point to make the message clearer
 MOUNT=$(df -P "$BACKUP_ROOT" | awk 'NR==2{print $6}')
 
@@ -59,31 +76,27 @@ human_bytes() {
   if command -v numfmt >/dev/null 2>&1; then
     numfmt --to=iec --suffix=B "$1"
   else
-    # fallback
     echo "${1}B"
   fi
 }
 
-
-
 CH_CLIENT=(clickhouse-client --host "$CH_HOST" --port "$CH_PORT" --user "$CH_USER")
 [[ -n "$CH_PASS" ]] && CH_CLIENT+=(--password "$CH_PASS")
-
 
 # Find where ClickHouse wrote the shadow snapshot for this table+label
 find_freeze_src() {
   local db="$1" tbl="$2" label="$3"
 
   # 1) classic table-local path
-  local c1="/var/lib/clickhouse/data/${db}/${tbl}/shadow/${label}/"
+  local c1="${CH_DATA_ROOT}/data/${db}/${tbl}/shadow/${label}/"
   # 2) global shadow path
-  local c2="/var/lib/clickhouse/shadow/${label}/data/${db}/${tbl}/"
+  local c2="${CH_DATA_ROOT}/shadow/${label}/data/${db}/${tbl}/"
   # 3) Atomic (UUID) store path
   local uuid; uuid="$("${CH_CLIENT[@]}"  -q "SELECT uuid FROM system.tables WHERE database='${db}' AND name='${tbl}'")" || true
   local c3=""
   if [[ -n "${uuid:-}" && "${#uuid}" -ge 3 ]]; then
     local pfx="${uuid:0:3}"
-    c3="/var/lib/clickhouse/store/${pfx}/${uuid}/shadow/${label}/"
+    c3="${CH_DATA_ROOT}/store/${pfx}/${uuid}/shadow/${label}/"
   fi
 
   for cand in "$c1" "$c2" "$c3"; do
@@ -93,9 +106,9 @@ find_freeze_src() {
     fi
   done
 
-  # As a last resort, try to locate it anywhere under /var/lib/clickhouse/shadow
+  # As a last resort, try to locate it anywhere
   local found
-  found="$(sudo find /var/lib/clickhouse -maxdepth 6 -type d -path "*/shadow/${label}" -print 2>/dev/null | head -n1 || true)"
+  found="$(sudo find "${CH_DATA_ROOT}" -maxdepth 6 -type d -path "*/shadow/${label}" -print 2>/dev/null | head -n1 || true)"
   if [[ -n "$found" ]]; then
     echo "$found"
     return 0
@@ -112,33 +125,33 @@ freeze_one_table() {
 
   # --- locate where ClickHouse wrote the snapshot ---
   local src
-  # classic table-local
-  local c1="/var/lib/clickhouse/data/${db}/${tbl}/shadow/${label}/"
-  # global shadow
-  local c2="/var/lib/clickhouse/shadow/${label}/data/${db}/${tbl}/"
-  # Atomic (UUID) store
+  local c1="${CH_DATA_ROOT}/data/${db}/${tbl}/shadow/${label}/"
+  local c2="${CH_DATA_ROOT}/shadow/${label}/data/${db}/${tbl}/"
   local uuid; uuid="$("${CH_CLIENT[@]}"  -q "SELECT uuid FROM system.tables WHERE database='${db}' AND name='${tbl}'" || true)"
-  local c3=""; if [[ -n "${uuid:-}" && "${#uuid}" -ge 3 ]]; then
-    local pfx="${uuid:0:3}"; c3="/var/lib/clickhouse/store/${pfx}/${uuid}/shadow/${label}/"
+  local c3=""
+  if [[ -n "${uuid:-}" && "${#uuid}" -ge 3 ]]; then
+    local pfx="${uuid:0:3}"
+    c3="${CH_DATA_ROOT}/store/${pfx}/${uuid}/shadow/${label}/"
   fi
   for cand in "$c1" "$c2" "$c3"; do
     if [[ -n "$cand" && -d "$cand" ]]; then src="$cand"; break; fi
   done
   if [[ -z "${src:-}" ]]; then
-    src="$(sudo find /var/lib/clickhouse -maxdepth 6 -type d -path "*/shadow/${label}" -print 2>/dev/null | head -n1 || true)"
+    src="$(sudo find "${CH_DATA_ROOT}" -maxdepth 6 -type d -path "*/shadow/${label}" -print 2>/dev/null | head -n1 || true)"
   fi
   [[ -z "${src:-}" ]] && { echo "ERROR: Could not locate snapshot for ${db}.${tbl} (${label})" >&2; exit 1; }
 
   # --- copy snapshot out to the backup tree ---
-  local dest="${BACKUP_ROOT}/${label}/${db}/${tbl}/"
+  local dest="${BACKUP_ROOT}/${LABEL}/${db}/${tbl}/"
   log "Copy from: $src"
   log "Copy to  : $dest"
   sudo mkdir -p "$dest"
   sudo rsync -aH "$src/" "$dest"
 
   # --- save exact DDL for disaster recovery ---
-  "${CH_CLIENT[@]}"  -q "SHOW CREATE TABLE \`${db}\`.\`${tbl}\`FORMAT TSVRaw" > "${dest}/create_table.sql"
+  "${CH_CLIENT[@]}" -q "SHOW CREATE TABLE \`${db}\`.\`${tbl}\` FORMAT TSVRaw" > "${dest}/create_table.sql"
 }
+
 mkdir -p "${BACKUP_ROOT}/${LABEL}"
 
 if [[ "$SCOPE" == "table" ]]; then
@@ -153,10 +166,10 @@ else
   done
 fi
 
-if $SYNC_TO_REMOTE; then
-  dest="${REMOTE_SSH_USER}@${REMOTE_HOST}:${REMOTE_BASE}/${DB}/${LABEL}/"
+if [[ "${SYNC_TO_REMOTE}" == "true" ]]; then
+  dest="${REMOTE_SSH_USER}@${REMOTE_HOST}:${REMOTE_NATIVE_ROOT}/${DB}/${LABEL}/"
   log "Rsync snapshot to ${dest}"
-  sudo rsync -aH --delete "${BACKUP_ROOT}/${LABEL}/" "$dest"
+  sudo rsync -aH --delete -e "ssh ${SSH_OPTS}" "${BACKUP_ROOT}/${LABEL}/" "$dest"
 fi
 
 log "Done. Snapshot at ${BACKUP_ROOT}/${LABEL}/"
@@ -166,14 +179,14 @@ echo "BACKUP elapsed: ${SECONDS}s"
 LABEL_ROOT="${BACKUP_ROOT}/${LABEL}"
 
 # If this run copied a single table, show that dir size
-if [ -n "${dest:-}" ] && [ -d "$dest" ]; then
-  DIR_BYTES=$(du -sb -- "$dest" | awk '{print $1}')
+if [ -n "${dest:-}" ] && [[ -d "${BACKUP_ROOT}/${LABEL}/" ]]; then
+  DIR_BYTES=$(du -sb -- "${BACKUP_ROOT}/${LABEL}/" | awk '{print $1}')
   if command -v numfmt >/dev/null 2>&1; then
     HUMAN_DIR=$(numfmt --to=iec --suffix=B "$DIR_BYTES")
   else
     HUMAN_DIR="${DIR_BYTES}B"
   fi
-  printf 'Backup dir size (this table): %s (%s)\n' "$HUMAN_DIR" "$dest"
+  printf 'Backup dir size (this label): %s (%s)\n' "$HUMAN_DIR" "${BACKUP_ROOT}/${LABEL}/"
 fi
 
 # Show the total size under this label root (may include multiple tables)
@@ -188,12 +201,10 @@ if [ -d "$LABEL_ROOT" ]; then
 fi
 
 # Filesystem usage delta for the filesystem that contains BACKUP_ROOT
-# (portable df parsing; no --output flags)
 read FS_USED_BEFORE FS_AVAIL_BEFORE <<EOF
 $(df -B1 -- "$BACKUP_ROOT" | awk 'NR==2{print $3, $4}')
 EOF
 
-# capture after values now
 read FS_USED_AFTER  FS_AVAIL_AFTER  <<EOF
 $(df -B1 -- "$BACKUP_ROOT" | awk 'NR==2{print $3, $4}')
 EOF
@@ -215,4 +226,4 @@ fi
 
 printf 'FS used delta on %s: %s\n' "$MOUNT" "$HUMAN_DELTA"
 printf 'Free space: before %s, after %s\n' "$HUMAN_AVAIL_BEFORE" "$HUMAN_AVAIL_AFTER"
-# ---- metrics: end ---
+

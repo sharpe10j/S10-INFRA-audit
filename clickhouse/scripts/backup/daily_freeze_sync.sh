@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# ch_freeze_day.sh — Freeze & rsync ClickHouse table data for a specific day
+# daily_freeze_sync.sh — Freeze & rsync ClickHouse table data for a specific day
 # Usage:
-#   ch_freeze_day.sh <database> <table> [YYYY-MM-DD]
+#   daily_freeze_sync.sh <database> <table> [YYYY-MM-DD]
 # Examples:
-#   ch_freeze_day.sh database1 production_test_table_1            # yesterday (America/New_York)
-#   ch_freeze_day.sh database1 production_test_table_1 2025-01-02 # specific day
+#   daily_freeze_sync.sh database1 production_test_table_1
+#   daily_freeze_sync.sh database1 production_test_table_1 2025-01-02
 
 set -euo pipefail
+
+# ======= LOAD ENV (shared across servers/services) =======
+ENV_FILE="${ENV_FILE:-/etc/sharpe10/dev.env}"
+if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
+# Optional split files (not required)
+[[ -f /etc/sharpe10/dev.secrets ]] && { set -a; . /etc/sharpe10/dev.secrets; set +a; }
+[[ -f /etc/sharpe10/dev.local   ]] && { set -a; . /etc/sharpe10/dev.local;   set +a; }
 
 # ======= ARGS =======
 if [[ $# -lt 2 || $# -gt 3 ]]; then
@@ -15,26 +22,31 @@ if [[ $# -lt 2 || $# -gt 3 ]]; then
 fi
 DB="$1"
 TABLE="$2"
-DAY_NY="${3:-$(date -d 'yesterday' +%F)}"        # default: yesterday
-TZ="America/New_York"
+DAY_NY="${3:-$(date -d 'yesterday' +%F)}"  # default: yesterday
+TZ="${TZ:-America/New_York}"
 
-# ======= CONFIG (edit to taste) =======
-CH_HOST="127.0.0.1"
-CH_PORT="9000"
-CH_USER="default"
-CH_PASS=""                                       # set if needed
-SSH_OPTS="-i ~/.ssh/id_ed25519_server2 -o StrictHostKeyChecking=accept-new"
+# ======= CONFIG (from env with safe fallbacks) =======
+# ClickHouse connection (bare metal on server1)
+CH_HOST="${CH_HOST:-${SERVER1_HOST:-server1}}"
+CH_PORT="${CH_PORT:-9000}"
+CH_USER="${CH_USER:-default}"
+CH_PASSWORD="${CH_PASSWORD:-}"  # empty means no --password flag
 
 # Local snapshot (shadow) root
-SHADOW_BASE="/var/lib/clickhouse/shadow"
+SHADOW_BASE="${FREEZE_ROOT:-/var/lib/clickhouse/shadow}"
 
 # Remote backup target (Server2)
-REMOTE_SSH_USER="jake_morrison"
-REMOTE_HOST="10.0.0.225"
-REMOTE_BASE="/backups/clickhouse/partitions/${DB}/${TABLE}"
+REMOTE_SSH_USER="${REMOTE_SSH_USER:-jake_morrison}"
+REMOTE_HOST="${SERVER2_HOST:-server2}"
+REMOTE_BACKUP_ROOT="${REMOTE_BACKUP_ROOT:-/backups}"
+REMOTE_BASE="${REMOTE_BACKUP_ROOT}/clickhouse/partitions/${DB}/${TABLE}"
+
+# SSH options (key path can come from env, with sensible default)
+SSH_KEY_SERVER2="${SSH_KEY_SERVER2:-$HOME/.ssh/id_ed25519_server2}"
+SSH_OPTS="-i ${SSH_KEY_SERVER2} -o StrictHostKeyChecking=accept-new"
 
 # Local retention for shadow tags
-LOCAL_RETENTION_DAYS=7
+LOCAL_RETENTION_DAYS="${LOCAL_RETENTION_DAYS:-7}"
 
 # Tag with underscores (no %2D): e.g., backup_2025_01_02_153045
 DAY_TAG="$(echo "$DAY_NY" | tr '-' '_')"
@@ -42,7 +54,7 @@ TAG="backup_${DAY_TAG}_$(date -u +%H%M%S)"
 
 # ClickHouse client
 CH_CLIENT=(clickhouse-client --host "$CH_HOST" --port "$CH_PORT" --user "$CH_USER" --format TSVRaw)
-[[ -n "$CH_PASS" ]] && CH_CLIENT+=(--password "$CH_PASS")
+[[ -n "$CH_PASSWORD" ]] && CH_CLIENT+=(--password "$CH_PASSWORD")
 
 log(){ echo "[$(date +'%F %T')] $*"; }
 
@@ -96,11 +108,9 @@ ssh ${SSH_OPTS} "${REMOTE_SSH_USER}@${REMOTE_HOST}" \
   "mkdir -p '${REMOTE_BASE}/${TAG}'"
 
 # 2) Copy the frozen parts (SRC) to DEST using the SSH key
-#    Note: use -e "ssh ${SSH_OPTS}" (do not add another -i here)
-log "Rsync ${SRC} -> ${DEST}/"
+log "Rsync ${SRC} -> ${DEST}"
 sudo rsync -aH --delete -e "ssh ${SSH_OPTS}" \
-  "${SRC}" "${DEST}/"
-
+  "${SRC}" "${DEST}"
 
 # ======= PRUNE OLD LOCAL SHADOWS =======
 log "Pruning local shadows older than ${LOCAL_RETENTION_DAYS} days"
