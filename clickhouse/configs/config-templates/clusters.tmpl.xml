@@ -1,0 +1,16 @@
+<yandex>
+  <remote_servers>
+    <cluster1>
+      <shard>
+        <replica>
+          <host>${SERVER1_HOST}</host>
+          <port>${CH_PORT}</port>
+        </replica>
+        <replica>
+          <host>${SERVER2_HOST}</host>
+          <port>${CH_PORT}</port>
+        </replica>
+      </shard>
+    </cluster1>
+  </remote_servers>
+</yandex>
