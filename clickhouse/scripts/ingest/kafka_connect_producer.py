@@ -1,5 +1,6 @@
+# THis file still references hard coded IPs!! 
 #
-#
+# this file is mostly here to show how data was produced in development
 #''' Sends messages in LINE BY LINE from json file using multiple PROCESSES. uStarts producers all at the same time.... doesnt actually start them at same time still'''
 #
 #
