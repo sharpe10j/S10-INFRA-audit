@@ -1,3 +1,4 @@
 artifacts/clickhouse/** filter=lfs diff=lfs merge=lfs -text
+clickhouse/artifacts/* filter=lfs diff=lfs merge=lfs -text
 clickhouse/artifacts/** filter=lfs diff=lfs merge=lfs -text
 artifacts/** filter=lfs diff=lfs merge=lfs -text
