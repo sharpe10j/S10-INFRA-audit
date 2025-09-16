@@ -104,12 +104,41 @@ install_prereqs() {
   fi
 }
 
+
+# Ensure default ClickHouse log dirs exist (idempotent)
+ensure_clickhouse_log_dirs() {
+  # default Debian/Ubuntu package user/group is 'clickhouse'
+  local user="clickhouse" group="clickhouse"
+
+  for d in /var/log/clickhouse-server /var/log/clickhouse-keeper; do
+    mkdir -p "$d"
+    chown -R "$user:$group" "$d" || true
+    chmod 755 "$d"
+  done
+  echo "ClickHouse log dirs ready."
+}
+
+render_kafka_if_server3() {
+  if [[ "$(hostname -s)" == "${SERVER3_HOST:-}" ]]; then
+    echo "Rendering Kafka configs on $(hostname -s)…"
+    "${REPO_ROOT}/kafka/install/render-kafka.sh" || {
+      echo "Kafka render failed"; exit 1; }
+  else
+    echo "Skipping Kafka render on $(hostname -s) (not ${SERVER3_HOST:-server3})."
+  fi
+}
+
+
+
+
 main() {
   require_root
   stage_env_if_missing
   load_env
   install_prereqs
   ensure_kafka_dirs
+  render_kafka_if_server3
+  ensure_clickhouse_log_dirs
 
   # ---- ClickHouse (delegate to your existing installer) ----
   # Pass through keeper-id only if provided
