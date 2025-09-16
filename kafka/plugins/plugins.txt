@@ -1,3 +1,0 @@
-# this file just shows the location of the plugins on server 3
-
-/home/jake_morrison/kafka-docker/connect-plugins/clickhouse-kafka-connect-v1.2.9-confluent.jar

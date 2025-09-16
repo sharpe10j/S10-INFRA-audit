@@ -1,2 +1,0 @@
-topics:
-- {name: docker_topic_1, partitions: 20, retention_hours: 168 }
