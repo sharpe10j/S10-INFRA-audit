@@ -73,6 +73,22 @@ load_env() {
   set +a
 }
 
+# Create host data directories for Kafka/ZooKeeper (idempotent)
+ensure_kafka_dirs() {
+  # Only needed on the node that will run Kafka/ZK (server3 in your env)
+  if [[ "$(hostname -s)" == "${SERVER3_HOST:-}" ]]; then
+    echo "Ensuring Kafka/ZK data dirs under ${DATA_ROOT:-/opt/sharpe10/data} ..."
+    mkdir -p "${ZK_DATA:-/opt/sharpe10/data/zookeeper}" \
+             "${KAFKA_DATA:-/opt/sharpe10/data/kafka}"
+    # Confluent images run as root; root:root + 755 is fine.
+    chown -R root:root "${DATA_ROOT:-/opt/sharpe10/data}"
+    chmod 755 "${ZK_DATA:-/opt/sharpe10/data/zookeeper}" \
+              "${KAFKA_DATA:-/opt/sharpe10/data/kafka}"
+  else
+    echo "Skipping Kafka/ZK dir setup on $(hostname -s) (not ${SERVER3_HOST:-server3})."
+  fi
+}
+
 install_prereqs() {
   if [[ ${RUN_APT} -eq 1 ]]; then
     if command -v apt-get >/dev/null 2>&1; then
@@ -93,6 +109,7 @@ main() {
   stage_env_if_missing
   load_env
   install_prereqs
+  ensure_kafka_dirs
 
   # ---- ClickHouse (delegate to your existing installer) ----
   # Pass through keeper-id only if provided

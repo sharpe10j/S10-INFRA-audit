@@ -1,0 +1,17 @@
+<yandex>
+    <remote_servers>
+        <cluster1>  <!-- Cluster name -->
+            <shard>
+                <replica>
+                    <host>10.0.0.208</host>  <!-- Server 1 IP -->
+                    <port>9000</port>
+                </replica>
+                <replica>
+                    <host>10.0.0.225</host>  <!-- Server 2 IP -->
+                    <port>9000</port>
+                </replica>
+            </shard>
+        </cluster1>
+    </remote_servers>
+</yandex>
+
