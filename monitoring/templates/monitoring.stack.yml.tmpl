@@ -1,7 +1,6 @@
 version: "3.8"
 
 services:
-  # One node-exporter per node (Server 2 and 3) to collect HOST metrics
   node-exporter:
     image: quay.io/prometheus/node-exporter:latest
     command:
@@ -10,101 +9,94 @@ services:
       - '--path.rootfs=/rootfs'
       - '--collector.filesystem.fs-types-exclude=^(tmpfs|devtmpfs|overlay|squashfs|ramfs|iso9660|bpf|nsfs|cgroup2?)$$'
       - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|run/docker/netns)($$|/)'
-      # mounting rootfs is optional in newer versions, but helps filesystem collector
-     # - '--collector.filesystem.rootfs'
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
       - /:/rootfs:ro
     deploy:
-      mode: global            # <- one per node (Server 2 AND Server 3)
-      restart_policy:
-        condition: any
+      mode: global
+      restart_policy: { condition: any }
       placement:
         constraints:
           - node.platform.os == linux
     ports:
-      - target: 9100
-        published: 9100
-        protocol: tcp
-        mode: host            # each node listens on its own :9100
-    networks: [monitor]
-
-  # Export Kafka consumer lag; keep it on Server 3 (where Kafka runs)
-  kafka-exporter:
-    image: danielqsj/kafka-exporter:latest
-    command:
-      - '--kafka.server=10.0.0.210:29092'   # <--- set to your broker advertise/Bootstrap you already use
-      - '--kafka.version=3.6.0'
-    deploy:
-      replicas: 1
-      placement:
-        constraints:
-          - node.hostname == server3      # <--- or use a node label if you prefer
-      restart_policy:
-        condition: any
-    ports:
-      - target: 9308
-        published: 9308
+      - target: ${NODE_EXPORTER_PORT}
+        published: ${NODE_EXPORTER_PORT}
         protocol: tcp
         mode: host
     networks: [monitor]
 
-  # (Optional now, but here for when you’re ready)
-  prometheus:
-    image: prom/prometheus:latest
-    volumes:
-      - /opt/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - /opt/prometheus/rules:/etc/prometheus/rules:ro
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    command:
+      - '--kafka.server=${KAFKA_BROKER_ADDR}'
+      - '--kafka.version=${KAFKA_VERSION}'
     deploy:
       replicas: 1
       placement:
         constraints:
-          - node.hostname == server3
+          - node.hostname == ${SERVER3_HOST}
+      restart_policy: { condition: any }
     ports:
-      - target: 9090
-        published: 9090
+      - target: ${KAFKA_EXPORTER_PORT}
+        published: ${KAFKA_EXPORTER_PORT}
+        protocol: tcp
+        mode: host
+    networks: [monitor]
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ${PROM_ROOT}/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${PROM_ROOT}/rules:/etc/prometheus/rules:ro
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${SERVER3_HOST}
+    ports:
+      - target: ${PROMETHEUS_PORT}
+        published: ${PROMETHEUS_PORT}
         mode: host
     networks: [monitor]
 
   alertmanager:
     image: prom/alertmanager:latest
     volumes:
-      - /opt/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ${ALERTM_ROOT}/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
     secrets:
       - alertmanager_smtp_pass
     deploy:
       replicas: 1
       placement:
         constraints:
-          - node.hostname == server3
+          - node.hostname == ${SERVER3_HOST}
     ports:
-      - target: 9093
-        published: 9093
+      - target: ${ALERTMANAGER_PORT}
+        published: ${ALERTMANAGER_PORT}
         mode: host
     networks: [monitor]
 
   grafana:
     image: grafana/grafana:latest
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=change-me-now         # set a strong one
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASS}
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
-      - /opt/grafana:/var/lib/grafana
-      - /opt/grafana/provisioning:/etc/grafana/provisioning
+      - ${GRAFANA_ROOT}:/var/lib/grafana
+      - ${GRAFANA_ROOT}/provisioning:/etc/grafana/provisioning
     deploy:
       replicas: 1
       placement:
         constraints:
-          - node.hostname == server3                     # use your actual server3 hostname
+          - node.hostname == ${SERVER3_HOST}
     ports:
-      - target: 3000
-        published: 3000
+      - target: ${GRAFANA_PORT}
+        published: ${GRAFANA_PORT}
         protocol: tcp
         mode: host
     networks: [monitor]
-
 
 networks:
   monitor:
@@ -113,4 +105,3 @@ networks:
 secrets:
   alertmanager_smtp_pass:
     external: true
-

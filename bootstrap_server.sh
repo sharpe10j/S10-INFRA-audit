@@ -150,7 +150,7 @@ main() {
 
   # ---- Add more services here as they’re ready ----
   # "${REPO_ROOT}/kafka/setup_local.sh"        --env-file "${ENV_FILE}"
-  # "${REPO_ROOT}/monitoring/setup_local.sh"   --env-file "${ENV_FILE}"
+   "${REPO_ROOT}/monitoring/setup_local.sh"   --env-file "${ENV_FILE}"
   # "${REPO_ROOT}/whatever/setup_local.sh"     --env-file "${ENV_FILE}"
 
   echo "Bootstrap complete on $(hostname -s)."

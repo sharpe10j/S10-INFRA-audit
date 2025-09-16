@@ -1,0 +1,18 @@
+global:
+  smtp_smarthost: '${ALERT_SMTP_HOSTPORT}'
+  smtp_from: '${ALERT_SMTP_FROM}'
+  smtp_auth_username: '${ALERT_SMTP_USERNAME}'
+  smtp_auth_password_file: '/run/secrets/alertmanager_smtp_pass'
+  smtp_require_tls: ${ALERT_SMTP_REQUIRE_TLS}
+
+route:
+  receiver: ${ALERT_DEFAULT_RECEIVER}
+  group_by: ['alertname']
+  group_wait: ${ALERT_GROUP_WAIT}
+  group_interval: ${ALERT_GROUP_INTERVAL}
+  repeat_interval: ${ALERT_REPEAT_INTERVAL}
+
+receivers:
+  - name: ${ALERT_DEFAULT_RECEIVER}
+    email_configs:
+      - to: '${ALERT_EMAIL_TO}'
