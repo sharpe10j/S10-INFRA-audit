@@ -3,7 +3,13 @@ set -euo pipefail
 
 : "${PROM_URL:=http://localhost:9090}"
 
-code="$(curl -sS -o /dev/null -w '%{http_code}' "${PROM_URL}/-/ready")"
+if [[ "${1:-}" == "--no-network" ]]; then
+  [[ "$PROM_URL" =~ ^https?:// ]] || { echo "PROM_URL invalid"; exit 1; }
+  echo "Prometheus vars OK (mock mode)"
+  exit 0
+fi
+
+code="$(curl --silent --show-error --fail -o /dev/null -w '%{http_code}' "${PROM_URL}/-/ready" || true)"
 if [[ "$code" == "200" ]]; then
   echo "Prometheus OK (${PROM_URL})"
   exit 0

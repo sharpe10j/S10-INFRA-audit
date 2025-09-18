@@ -4,8 +4,15 @@ set -euo pipefail
 : "${CONNECT_HOST:?need CONNECT_HOST}"
 : "${CONNECT_PORT:=8083}"
 
-curl_args=("--silent" "--show-error" "--fail" "--noproxy" "${CONNECT_HOST}" "-o" "/dev/null" "-w" "%{http_code}")
-code="$(curl "${curl_args[@]}" "http://${CONNECT_HOST}:${CONNECT_PORT}/connectors" || true)"
+if [[ "${1:-}" == "--no-network" ]]; then
+  [[ "${CONNECT_PORT}" =~ ^[0-9]+$ ]] || { echo "CONNECT_PORT invalid"; exit 1; }
+  echo "Kafka Connect vars OK (mock mode)"
+  exit 0
+fi
+
+# Bypass proxies for CONNECT_HOST; keep strict curl error reporting
+code="$(curl --silent --show-error --fail --noproxy "${CONNECT_HOST}" -o /dev/null -w '%{http_code}' \
+       "http://${CONNECT_HOST}:${CONNECT_PORT}/connectors" || true)"
 if [[ "$code" == "200" ]]; then
   echo "Kafka Connect OK (${CONNECT_HOST}:${CONNECT_PORT})"
   exit 0
