@@ -1,6 +1,27 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
+# --- Env vars (add) ---
+ENV_NAME ?= dev
+ROLE     ?= server1
+
+ENV_FILE       ?= envs/$(ENV_NAME).env
+ROLE_ENV_FILE  ?= envs/$(ROLE)/$(ENV_NAME).env
+SEEDED_ENV     ?= /etc/sharpe10/dev.env
+
+
+.PHONY: env
+env: ## show which env files will be used
+	@echo "ENV_NAME     = $(ENV_NAME)"
+	@echo "ROLE         = $(ROLE)"
+	@echo "ENV_FILE     = $(ENV_FILE)       ($$(test -f $(ENV_FILE) && echo present || echo missing))"
+	@echo "ROLE_ENV     = $(ROLE_ENV_FILE)  ($$(test -f $(ROLE_ENV_FILE) && echo present || echo missing))"
+	@echo "SEEDED_ENV   = $(SEEDED_ENV)     ($$(test -f $(SEEDED_ENV) && echo present || echo missing))"
+
+.PHONY: seed
+seed: ## build /etc/sharpe10/dev.env from base + role (ROLE=server1|server2|server3)
+	@./ops/seed_env.sh $(ROLE)
+
 # -------- Helpers --------
 help: ## list available make targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## ' Makefile | sed 's/:.*##/: /'
@@ -9,6 +30,12 @@ check-env: ## show the env file that will be used (does not modify anything)
 	@echo "ROLE=${ROLE:-server2}"
 	@echo "Env layering source: envs/dev.env + envs/$${ROLE}/dev.env (if present)"
 	@echo "Runtime target: /etc/sharpe10/dev.env"
+
+define LOAD_ENV
+if [ -f "$(SEEDED_ENV)" ]; then set -a; . "$(SEEDED_ENV)"; set +a; fi; \
+if [ -f "$(ENV_FILE)" ]; then   set -a; . "$(ENV_FILE)"; set +a; fi; \
+if [ -f "$(ROLE_ENV_FILE)" ]; then set -a; . "$(ROLE_ENV_FILE)"; set +a; fi
+endef
 
 dev-env: ## create venv & install tools used by scripts
 	./validation/install/ensure_venv.sh
@@ -43,10 +70,15 @@ deploy-kafka: render ## deploy kafka/connect stack (Swarm)
 	./kafka/install/deploy-kafka-stack.sh
 
 # -------- Smoke tests (quick health checks) --------
-smoke: ## run end-to-end smoke tests (non-destructive)
-	./tools/smoke/clickhouse_ping.sh || true
-	./tools/smoke/prom_ping.sh || true
-	@echo "[smoke] done"
+.PHONY: smoke
+smoke: ## run non-destructive smoke tests (ENV_NAME=dev ROLE=serverX)
+	@set -euo pipefail; \
+	$(LOAD_ENV); \
+	./tools/smoke/clickhouse_ping.sh; \
+	./tools/smoke/prom_ping.sh; \
+	./tools/smoke/kafka_broker_ping.sh; \
+	./tools/smoke/kafka_connect_ping.sh; \
+	echo "[smoke] done"
 
 down: ## remove stacks (local only)
 	docker stack rm $${MON_STACK_NAME:-s10-monitoring} || true
