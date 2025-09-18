@@ -15,4 +15,5 @@
 ## Prep (make scripts executable)
 > Some `.sh` files may not have the executable bit set.
 ```bash
-git ls-files '*.sh' | xargs -I{} git update-index --chmod=+x "{}"
+git ls-files -z '*.sh' | xargs -0 -I{} git update-index --chmod=+x "{}"
+```
