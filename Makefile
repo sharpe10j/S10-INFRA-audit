@@ -8,6 +8,12 @@ ROLE     ?= server1
 ENV_FILE       ?= envs/$(ENV_NAME).env
 ROLE_ENV_FILE  ?= envs/$(ROLE)/$(ENV_NAME).env
 SEEDED_ENV     ?= /etc/sharpe10/dev.env
+SMOKE_MODE ?= live   # use 'mock' in CI/Codex; 'live' on real hosts
+
+# pass --no-network in mock mode
+ifeq ($(SMOKE_MODE),mock)
+  NO_NET := --no-network
+endif
 
 
 .PHONY: env
@@ -71,14 +77,15 @@ deploy-kafka: render ## deploy kafka/connect stack (Swarm)
 
 # -------- Smoke tests (quick health checks) --------
 .PHONY: smoke
-smoke: ## run non-destructive smoke tests (ENV_NAME=dev ROLE=serverX)
+smoke: ## run smoke checks per ROLE; mock mode validates vars only
 	@set -euo pipefail; \
 	$(LOAD_ENV); \
-	./tools/smoke/clickhouse_ping.sh; \
-	./tools/smoke/prom_ping.sh; \
-	./tools/smoke/kafka_broker_ping.sh; \
-	./tools/smoke/kafka_connect_ping.sh; \
-	echo "[smoke] done"
+	case "$(ROLE)" in \
+	  server1) ./tools/smoke/clickhouse_ping.sh $(NO_NET);; \
+	  server2) ./tools/smoke/prom_ping.sh $(NO_NET); ./tools/smoke/kafka_connect_ping.sh $(NO_NET);; \
+	  server3) ./tools/smoke/kafka_broker_ping.sh $(NO_NET);; \
+	  *) echo "unknown ROLE=$(ROLE)"; exit 2;; \
+	esac
 
 down: ## remove stacks (local only)
 	docker stack rm $${MON_STACK_NAME:-s10-monitoring} || true
