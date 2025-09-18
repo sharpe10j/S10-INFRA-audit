@@ -1,0 +1,15 @@
+[Unit]
+Description=ClickHouse Keeper (custom binary)
+After=network.target
+
+[Service]
+Type=simple
+User=clickhouse
+Group=clickhouse
+ExecStart=/usr/local/bin/clickhouse-keeper --config-file=/etc/clickhouse-keeper/keeper_config.xml --log-file=/var/log/clickhouse/keeper.log --errorlog-file=/var/log/clickhouse/keeper.err.log
+Restart=on-failure
+RestartSec=2s
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,119 @@
+version: "3.8"
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      # keep your existing host path (unchanged)
+      - ${ZK_DATA}:/var/lib/zookeeper
+    deploy:
+      placement:
+        constraints:
+          - node.labels.swarm_node == worker
+    networks:
+      - external-connect-overlay
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # *** keep your listener names and mapping; just make the host part env-driven ***
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://${SERVER3_HOST}:29092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_MESSAGE_MAX_BYTES: 524288000
+    volumes:
+      # keep your existing host path (unchanged)
+      - ${KAFKA_DATA}:/var/lib/kafka/data
+    depends_on: [zookeeper]
+    deploy:
+      placement:
+        constraints:
+          - node.labels.swarm_node == worker
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 10G
+    networks:
+      - external-connect-overlay
+
+  connect:
+    image: confluentinc/cp-kafka-connect:7.5.3
+    ports:
+      - "${CONNECT_PORT}:${CONNECT_PORT}"
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: ${KAFKA_BROKERS_EXTERNAL}
+      CONNECT_REST_PORT: ${CONNECT_PORT}
+      CONNECT_GROUP_ID: ${CONNECT_GROUP_ID:-connect-cluster-1}
+      CONNECT_CONFIG_STORAGE_TOPIC: ${CONNECT_CFG_TOPIC:-_connect_configs}
+      CONNECT_OFFSET_STORAGE_TOPIC: ${CONNECT_OFFSETS_TOPIC:-_connect_offsets}
+      CONNECT_STATUS_STORAGE_TOPIC: ${CONNECT_STATUS_TOPIC:-_connect_status}
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_PLUGIN_PATH: /plugins
+      # use your committed log4j (no Docker config needed)
+      KAFKA_LOG4J_OPTS: -Dlog4j.configuration=file:/etc/kafka/connect-log4j.properties
+    volumes:
+      # JAR plugins (bind mount; no custom image)
+      - ${REPO_ROOT}/kafka/plugins:/plugins:ro
+      # your static log4j properties file
+      - ${REPO_ROOT}/kafka/configs/connect/connect-log4j.properties:/etc/kafka/connect-log4j.properties:ro
+      # (optional) entire rendered connect dir, handy for debugging
+      - ${REPO_ROOT}/kafka/configs/connect:/etc/kafka-connect:ro
+    depends_on: [kafka]
+    deploy:
+      placement:
+        constraints:
+          - node.labels.swarm_node == worker
+    networks:
+      - external-connect-overlay
+
+  kafka-init:
+    image: bitnami/kafka:3.7
+    # wait for broker & connect; create topic; register/UPDATE connector from the rendered JSON
+    command: >
+      bash -lc '
+        set -euo pipefail
+        echo "Waiting for Kafka @ ${SERVER3_HOST}:29092 ..."
+        until /opt/bitnami/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server ${SERVER3_HOST}:29092 >/dev/null 2>&1; do sleep 2; done
+        echo "Waiting for Connect @ http://${CONNECT_HOST}:${CONNECT_PORT} ..."
+        until curl -sf http://${CONNECT_HOST}:${CONNECT_PORT}/connectors >/dev/null; do sleep 2; done
+        echo "Creating topic ${CONNECT_TOPICS} (idempotent) ..."
+        /opt/bitnami/kafka/bin/kafka-topics.sh --bootstrap-server ${SERVER3_HOST}:29092 --create --if-not-exists \
+          --topic ${CONNECT_TOPICS} --partitions ${TOPIC_PARTITIONS:-3} --replication-factor ${TOPIC_RF:-1}
+        echo "Upserting connector ${CONNECTOR_NAME} from /etc/connector/clickhouse-sink.json ..."
+        curl -sS -X PUT -H "Content-Type: application/json" \
+          --data @/etc/connector/clickhouse-sink.json \
+          http://${CONNECT_HOST}:${CONNECT_PORT}/connectors/${CONNECTOR_NAME}/config
+        echo "Init complete."
+      '
+    volumes:
+      # the rendered JSON lives here; bind-mount it for the init job
+      - ${REPO_ROOT}/kafka/configs/connect:/etc/connector:ro
+    depends_on: [connect]
+    deploy:
+      restart_policy:
+        condition: none
+      placement:
+        constraints:
+          - node.labels.swarm_node == worker
+    networks:
+      - external-connect-overlay
+
+networks:
+  external-connect-overlay:
+    external: true

@@ -1,0 +1,107 @@
+version: "3.8"
+
+services:
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:latest
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.fs-types-exclude=^(tmpfs|devtmpfs|overlay|squashfs|ramfs|iso9660|bpf|nsfs|cgroup2?)$$'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|run/docker/netns)($$|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    deploy:
+      mode: global
+      restart_policy: { condition: any }
+      placement:
+        constraints:
+          - node.platform.os == linux
+    ports:
+      - target: ${NODE_EXPORTER_PORT}
+        published: ${NODE_EXPORTER_PORT}
+        protocol: tcp
+        mode: host
+    networks: [monitor]
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    command:
+      - '--kafka.server=${KAFKA_BROKER_ADDR}'
+      - '--kafka.version=${KAFKA_VERSION}'
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${SERVER3_HOST}
+      restart_policy: { condition: any }
+    ports:
+      - target: ${KAFKA_EXPORTER_PORT}
+        published: ${KAFKA_EXPORTER_PORT}
+        protocol: tcp
+        mode: host
+    networks: [monitor]
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ${PROM_ROOT}/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${PROM_ROOT}/rules:/etc/prometheus/rules:ro
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${SERVER3_HOST}
+    ports:
+      - target: ${PROMETHEUS_PORT}
+        published: ${PROMETHEUS_PORT}
+        mode: host
+    networks: [monitor]
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    volumes:
+      - ${ALERTM_ROOT}/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    secrets:
+      - alertmanager_smtp_pass
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${SERVER3_HOST}
+    ports:
+      - target: ${ALERTMANAGER_PORT}
+        published: ${ALERTMANAGER_PORT}
+        mode: host
+    networks: [monitor]
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASS}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ${GRAFANA_ROOT}:/var/lib/grafana
+      - ${GRAFANA_ROOT}/provisioning:/etc/grafana/provisioning
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == ${SERVER3_HOST}
+    ports:
+      - target: ${GRAFANA_PORT}
+        published: ${GRAFANA_PORT}
+        protocol: tcp
+        mode: host
+    networks: [monitor]
+
+networks:
+  monitor:
+    driver: overlay
+
+secrets:
+  alertmanager_smtp_pass:
+    external: true

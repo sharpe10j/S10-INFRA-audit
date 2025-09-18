@@ -1,0 +1,6 @@
+<yandex>
+  <zookeeper>
+    <node><host>${SERVER1_HOST}</host><port>${KEEPER_CLIENT_PORT}</port></node>
+    <node><host>${SERVER2_HOST}</host><port>${KEEPER_CLIENT_PORT}</port></node>
+  </zookeeper>
+</yandex>

@@ -1,0 +1,25 @@
+{
+  "name": "${CONNECTOR_NAME}",
+  "config": {
+    "connector.class": "com.clickhouse.kafka.connect.ClickHouseSinkConnector",
+    "tasks.max": "${CONNECT_TASKS_MAX}",
+    "topics": "${CONNECT_TOPICS}",
+    "hostname": "${CH_HOST}",
+    "port": "${CH_HTTP_PORT}",
+    "clickhouse.user": "${CH_USER}",
+    "clickhouse.password": "${CH_PASSWORD}",
+    "database": "${CH_DB}",
+    "topic2TableMap": "${CONNECT_TOPIC2TABLE}",
+    "auto.create.table": "${CONNECT_AUTO_CREATE:false}",
+    "batch.size": "${CONNECT_BATCH_SIZE:50000}",
+    "linger.ms": "${CONNECT_LINGER_MS:500}",
+    "consumer.override.fetch.min.bytes": "${KAFKA_FETCH_MIN_BYTES:52428800}",
+    "consumer.override.fetch.max.bytes": "${KAFKA_FETCH_MAX_BYTES:524288000}",
+    "consumer.override.fetch.max.wait.ms": "${KAFKA_FETCH_MAX_WAIT_MS:500}",
+    "consumer.override.max.partition.fetch.bytes": "${KAFKA_MAX_PARTITION_FETCH:52428800}",
+    "consumer.override.max.poll.records": "${KAFKA_MAX_POLL_RECORDS:100000}",
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": false
+  }
+}
