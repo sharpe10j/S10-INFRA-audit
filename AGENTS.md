@@ -15,12 +15,4 @@
 ## Prep (make scripts executable)
 > Some `.sh` files may not have the executable bit set.
 ```bash
-git ls-files '*.sh' | xargs chmod +x
-
-## How to run
-1. `make dev-env`        # venv + tools
-2. `make render`         # render configs for CH/Kafka/Monitoring
-3. `make swarm-init`     # init local single-node swarm + overlay
-4. `make deploy-monitor` # deploy monitoring stack
-5. `make deploy-kafka`   # deploy kafka/connect stack
-6. `make smoke`          # quick health checks
+git ls-files '*.sh' | xargs -I{} git update-index --chmod=+x "{}"
