@@ -160,6 +160,7 @@ deploy_by_role(){
   case "$ROLE" in
     server2)  # Swarm manager + monitoring
       "$REPO_ROOT/ops/init_swarm.sh"            # uses $SWARM_OVERLAY_NAME (default external-connect-overlay)
+      "$REPO_ROOT/ops/label_swarm_nodes.sh" --env-file "$ENV_FILE"
       "${REPO_ROOT}/monitoring/render-monitoring.sh"
       docker stack deploy -c monitoring/configs/monitoring.stack.yml s10-monitoring
       deploy_kafka_stack_from_manager

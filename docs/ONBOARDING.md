@@ -27,7 +27,7 @@ The top-level `bootstrap_server*.sh` wrappers install prerequisites, seed enviro
 - **Environment layering** drives everything. Keep `envs/dev.env` minimal and push host-specific overrides into `envs/<role>/dev.env`. Missing values lead to runtime surprises; lint them.
 - **Rendered configs are artifacts.** Anything under `*/configs/` is generated; regenerate with `make render` whenever templates change.
 - **Bootstrap scripts double as documentation.** Read them end-to-end before running; they show sequencing and guardrails.
-- **Swarm bootstrap is orchestrated.** Server2 runs initialize the Swarm, write join tokens, and deploy stacks; server3 runs consume those tokens to join automatically before Kafka is scheduled.
+- **Swarm bootstrap is orchestrated.** Server2 runs initialize the Swarm, write join tokens, stamp node labels via `ops/label_swarm_nodes.sh`, and deploy stacks; server3 runs consume those tokens to join automatically before Kafka is scheduled.
 - **Improvements to tackle next**
   - Add automated validation for env files (shellcheck/yamllint already optional in `make lint`).
   - Expand smoke tests to assert data paths (e.g., ClickHouse query, Kafka topic round-trip).
@@ -87,12 +87,28 @@ The top-level `bootstrap_server*.sh` wrappers install prerequisites, seed enviro
    ```bash
    sudo ./bootstrap_server.sh --role server2
    ```
+   Running the bootstrap re-applies node labels before redeploying stacks so scheduling constraints stay intact.
 9. **Smoke-test**
    ```bash
    make smoke ROLE=server2 SMOKE_MODE=live
    ```
 
 Use `SMOKE_MODE=mock` locally/CI to skip live network access and just validate env wiring.
+
+## Managing Swarm node labels
+Services in the Swarm stacks pin to node roles using the `swarm_node` label (`swarm_node=manager` for manager-only tasks and `swarm_node=worker` for the Kafka data plane). The manager bootstrap automatically calls `ops/label_swarm_nodes.sh` after `init_swarm` so the labels exist before any stack is scheduled.
+
+The helper reads hostnames from the environment—`SWARM_MANAGER_HOSTS`/`SERVER2_HOST` for managers and `SWARM_WORKER_HOSTS`/`SERVER3_HOST` for workers—and is safe to rerun as topology changes. Typical adjustments:
+
+1. **Add or rename a worker.** Update `/etc/sharpe10/dev.env` (or the source env files) with the new hostname, for example `SWARM_WORKER_HOSTS="server3 server4"`.
+2. **Reapply labels.** On the Swarm manager run:
+   ```bash
+   sudo ./ops/label_swarm_nodes.sh --env-file /etc/sharpe10/dev.env
+   ```
+   Pass `--worker <host>` or `--manager <host>` flags for ad-hoc nodes if you do not want to edit the env file.
+3. **Remove retired nodes.** Prune the hostname from the env file and optionally drop the label manually with `docker node update --label-rm swarm_node <host>` once the node is drained.
+
+The helper exits early (with a clear log message) if a node has not joined the Swarm yet, so you can run it before server3 is ready without failing the bootstrap.
 
 ## Deploying ClickHouse on server1
 - Bootstrap with `sudo ./bootstrap_server.sh --role server1 --keeper-id <id>` after seeding the env.
