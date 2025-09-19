@@ -40,6 +40,8 @@ The top-level `bootstrap_server*.sh` wrappers install prerequisites, seed enviro
 
 `make seed ROLE=server2` writes `/etc/sharpe10/dev.env` by concatenating the base + role overrides with helpful comments. Run it on every host, and rerun after editing env files.
 
+> ℹ️ **Account ownership:** `envs/dev.env` defines `SHARPE10_OWNER`, the user/group that should own Sharpe10 data paths. Override it before seeding if your hosts use a different service account—the bootstrap scripts rely on it when creating directories and granting Docker access.
+
 ## Make targets you will use most
 | Target | Purpose |
 | --- | --- |
@@ -60,26 +62,28 @@ The top-level `bootstrap_server*.sh` wrappers install prerequisites, seed enviro
    ```bash
    make dev-env
    ```
-3. **Seed environment on the host** (choose the role you are configuring)
+3. **Create or select the runtime account**
+   Ensure the system user/group referenced by `SHARPE10_OWNER` exists. The default `jake_morrison:jake_morrison` matches lab hosts; override it in your env files before bootstrapping if you use a different service account.
+4. **Seed environment on the host** (choose the role you are configuring)
    ```bash
    sudo make seed ROLE=server2
    make env ROLE=server2
    ```
-4. **For Swarm hosts** (server2 locally, server3 joins via docker CLI)
+5. **For Swarm hosts** (server2 locally, server3 joins via docker CLI)
    ```bash
    sudo make swarm-init        # run once on server2
    docker swarm join --token <WORKER_TOKEN> <MANAGER_IP>:2377   # server3
    ```
-5. **Render configs before deploying**
+6. **Render configs before deploying**
    ```bash
    make render
    ```
-6. **Deploy stacks from server2** (manager)
+7. **Deploy stacks from server2** (manager)
    ```bash
    make deploy-monitor
    make deploy-kafka
    ```
-7. **Smoke-test**
+8. **Smoke-test**
    ```bash
    make smoke ROLE=server2 SMOKE_MODE=live
    ```
