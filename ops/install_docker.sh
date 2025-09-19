@@ -78,8 +78,17 @@ fi
 
 systemctl enable docker --now
 
-# Add your user to the docker group (safe if already in group)
-usermod -aG docker jake_morrison || true
+# Add configured owner to the docker group when requested
+if [[ -n "${SHARPE10_OWNER:-}" ]]; then
+  docker_user="${SHARPE10_OWNER%%:*}"
+  if id -u "$docker_user" &>/dev/null; then
+    usermod -aG docker "$docker_user" || true
+  else
+    echo "[docker] user '${docker_user}' not found; skipping docker group membership" >&2
+  fi
+else
+  echo "[docker] SHARPE10_OWNER not set; skipping docker group membership" >&2
+fi
 
 # --- Hold packages to prevent drift ---
 if [[ "$APT_HOLD_DOCKER" == "1" ]]; then
