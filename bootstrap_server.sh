@@ -31,6 +31,7 @@ require_root(){ [[ $EUID -ne 0 ]] && { echo "Run with sudo"; exit 1; }; }
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 ENV_DIR_RUNTIME="/etc/sharpe10"
+SWARM_TOKENS_FILE="${REPO_ROOT}/.swarm/join_tokens"
 
 stage_env(){
   # if /etc/sharpe10/dev.env is missing, seed from envs/<role>/dev.env
@@ -88,16 +89,83 @@ kafka_dirs_and_render_if_server3(){
   fi
 }
 
+join_swarm_if_server3(){
+  if [[ "$ROLE" != "server3" ]]; then return; fi
+
+  local state
+  state="$(docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null || echo "inactive")"
+  if [[ "$state" =~ ^(active|pending)$ ]]; then
+    echo "[swarm] server3 already part of Swarm (state=$state)"
+    return
+  fi
+
+  if [[ ! -f "$SWARM_TOKENS_FILE" ]]; then
+    echo "[swarm] join tokens missing at $SWARM_TOKENS_FILE"
+    echo "         Run bootstrap on server2 first and copy .swarm/join_tokens to this host."
+    exit 1
+  fi
+
+  # shellcheck disable=SC1090
+  . "$SWARM_TOKENS_FILE"
+  if [[ -z "${WORKER_TOKEN:-}" || -z "${MANAGER_IP:-}" ]]; then
+    echo "[swarm] join tokens file missing WORKER_TOKEN or MANAGER_IP"
+    exit 1
+  fi
+
+  docker swarm join --token "$WORKER_TOKEN" "${MANAGER_IP}:2377"
+  echo "[swarm] server3 joined Swarm manager at ${MANAGER_IP}"
+}
+
+wait_for_swarm_worker(){
+  local target="${SERVER3_HOST:-server3}"
+  local timeout="${SWARM_JOIN_WAIT_SECS:-120}"
+  local interval=5 elapsed=0
+
+  if docker node inspect "$target" >/dev/null 2>&1; then
+    local status
+    status="$(docker node inspect -f '{{.Status.State}}' "$target" 2>/dev/null || echo "unknown")"
+    if [[ "$status" == "ready" ]]; then
+      echo "[swarm] worker '$target' already ready"
+      return 0
+    fi
+  fi
+
+  echo "[swarm] waiting for worker '$target' to join (timeout=${timeout}s)"
+  while (( elapsed < timeout )); do
+    if docker node inspect "$target" >/dev/null 2>&1; then
+      local status
+      status="$(docker node inspect -f '{{.Status.State}}' "$target" 2>/dev/null || echo "unknown")"
+      if [[ "$status" == "ready" ]]; then
+        echo "[swarm] worker '$target' ready"
+        return 0
+      fi
+    fi
+    sleep "$interval"
+    elapsed=$(( elapsed + interval ))
+  done
+
+  echo "[swarm] worker '$target' not ready after ${timeout}s"
+  return 1
+}
+
+deploy_kafka_stack_from_manager(){
+  if wait_for_swarm_worker; then
+    "${REPO_ROOT}/kafka/install/deploy-kafka-stack.sh"
+  else
+    echo "[kafka] skipping stack deploy until worker '${SERVER3_HOST:-server3}' is joined"
+  fi
+}
+
 deploy_by_role(){
   case "$ROLE" in
     server2)  # Swarm manager + monitoring
       "$REPO_ROOT/ops/init_swarm.sh"            # uses $SWARM_OVERLAY_NAME (default external-connect-overlay)
       "${REPO_ROOT}/monitoring/render-monitoring.sh"
       docker stack deploy -c monitoring/configs/monitoring.stack.yml s10-monitoring
+      deploy_kafka_stack_from_manager
       ;;
     server3)  # Kafka/ZK/Connect host
       kafka_dirs_and_render_if_server3
-      "${REPO_ROOT}/kafka/install/deploy-kafka-stack.sh"
       ;;
     server1)  # ClickHouse bare metal
       ensure_clickhouse_log_dirs
@@ -118,6 +186,7 @@ main(){
   load_env
   foundation
   install_node_exporter_if_server1
+  join_swarm_if_server3
   deploy_by_role
   echo "Bootstrap complete on $(hostname -s) for role=$ROLE"
 }

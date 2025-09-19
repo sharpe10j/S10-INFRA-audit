@@ -27,6 +27,7 @@ The top-level `bootstrap_server*.sh` wrappers install prerequisites, seed enviro
 - **Environment layering** drives everything. Keep `envs/dev.env` minimal and push host-specific overrides into `envs/<role>/dev.env`. Missing values lead to runtime surprises; lint them.
 - **Rendered configs are artifacts.** Anything under `*/configs/` is generated; regenerate with `make render` whenever templates change.
 - **Bootstrap scripts double as documentation.** Read them end-to-end before running; they show sequencing and guardrails.
+- **Swarm bootstrap is orchestrated.** Server2 runs initialize the Swarm, write join tokens, and deploy stacks; server3 runs consume those tokens to join automatically before Kafka is scheduled.
 - **Improvements to tackle next**
   - Add automated validation for env files (shellcheck/yamllint already optional in `make lint`).
   - Expand smoke tests to assert data paths (e.g., ClickHouse query, Kafka topic round-trip).
@@ -48,7 +49,7 @@ The top-level `bootstrap_server*.sh` wrappers install prerequisites, seed enviro
 | `make help` | Discover documented targets. |
 | `make dev-env` | Create `.venv` and install lint/scripting dependencies from `validation/`. |
 | `make render` | Regenerate ClickHouse, Kafka, and monitoring configs via their render scripts. |
-| `make deploy-monitor` / `make deploy-kafka` | Deploy Docker Swarm stacks (manager node only). |
+| `make deploy-monitor` / `make deploy-kafka` | Redeploy Docker Swarm stacks manually (manager node only; bootstrap handles initial rollout). |
 | `make smoke ROLE=serverX SMOKE_MODE=mock|live` | Run role-specific health checks (mock skips network). |
 | `make swarm-init` | (Server2/local) Initialize Swarm and overlay network. |
 | `make down` | Remove Swarm stacks locally. |
@@ -69,21 +70,24 @@ The top-level `bootstrap_server*.sh` wrappers install prerequisites, seed enviro
    sudo make seed ROLE=server2
    make env ROLE=server2
    ```
-5. **For Swarm hosts** (server2 locally, server3 joins via docker CLI)
+5. **Bootstrap server2** (Swarm manager)
    ```bash
-   sudo make swarm-init        # run once on server2
-   docker swarm join --token <WORKER_TOKEN> <MANAGER_IP>:2377   # server3
+   sudo ./bootstrap_server.sh --role server2
    ```
-6. **Render configs before deploying**
+   This seeds `/etc/sharpe10/dev.env`, initializes the Swarm (writing `.swarm/join_tokens`), deploys monitoring, and waits for server3 before pushing the Kafka stack.
+6. **Distribute join tokens to server3**
+   Copy `.swarm/join_tokens` created on server2 to the same repo path on server3 (for example: `scp server2:/opt/sharpe10/S10-INFRA/.swarm/join_tokens server3:/opt/sharpe10/S10-INFRA/.swarm/`).
+7. **Bootstrap server3** (Swarm worker/Kafka host)
    ```bash
-   make render
+   sudo ./bootstrap_server.sh --role server3
    ```
-7. **Deploy stacks from server2** (manager)
+   With the join tokens in place, the script joins the worker automatically and prepares Kafka/ZooKeeper data paths.
+8. **Finalize Kafka deployment from server2**
+   If server2 was still waiting when server3 joined, Kafka deploys automatically. Otherwise rerun the manager bootstrap (or call `make deploy-kafka`) once the worker shows as `Ready`:
    ```bash
-   make deploy-monitor
-   make deploy-kafka
+   sudo ./bootstrap_server.sh --role server2
    ```
-8. **Smoke-test**
+9. **Smoke-test**
    ```bash
    make smoke ROLE=server2 SMOKE_MODE=live
    ```
