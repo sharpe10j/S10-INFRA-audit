@@ -12,8 +12,9 @@ ROLE=""
 KEEPER_ID=""
 ENV_FILE="/etc/sharpe10/dev.env"
 RUN_APT=1
+PLAN_MODE="${PLAN_MODE:-0}"
 
-usage(){ echo "Usage: sudo $0 --role <server1|server2|server3> [--keeper-id N] [--env-file PATH] [--no-apt]"; exit 2; }
+usage(){ echo "Usage: sudo $0 --role <server1|server2|server3> [--keeper-id N] [--env-file PATH] [--no-apt] [--plan]"; exit 2; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -21,13 +22,24 @@ while [[ $# -gt 0 ]]; do
     --keeper-id) KEEPER_ID="${2:-}"; shift 2 ;;
     --env-file)  ENV_FILE="${2:-}"; shift 2 ;;
     --no-apt)    RUN_APT=0; shift 1 ;;
+    --plan)      PLAN_MODE=1; shift 1 ;;
     -h|--help)   usage ;;
     *) echo "Unknown arg: $1"; usage ;;
   esac
 done
 [[ -z "$ROLE" ]] && usage
 
-require_root(){ [[ $EUID -ne 0 ]] && { echo "Run with sudo"; exit 1; }; }
+plan_log(){
+  echo "[plan] $*"
+}
+
+require_root(){
+  if [[ "${PLAN_MODE}" == "1" ]]; then
+    plan_log "Skipping root requirement check"
+    return
+  fi
+  [[ $EUID -ne 0 ]] && { echo "Run with sudo"; exit 1; };
+}
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 ENV_DIR_RUNTIME="/etc/sharpe10"
@@ -38,7 +50,10 @@ stage_env(){
   if [[ ! -f "$ENV_FILE" ]]; then
     "$REPO_ROOT/ops/seed_env.sh" "$ROLE"
   fi
-  [[ ! -f "$ENV_FILE" ]] && { echo "Missing $ENV_FILE; add envs/$ROLE/dev.env"; exit 1; }
+  if [[ ! -f "$ENV_FILE" ]]; then
+    echo "Missing $ENV_FILE; add envs/$ROLE/dev.env"
+    exit 1
+  fi
 }
 
 load_env(){
@@ -114,6 +129,19 @@ bootstrap_git_lfs(){
 }
 
 foundation(){
+  if [[ "${PLAN_MODE}" == "1" ]]; then
+    plan_log "Would run ops/preflight.sh"
+    if [[ "$ROLE" == "server2" || "$ROLE" == "server3" ]]; then
+      plan_log "Would install Docker via ops/install_docker.sh"
+    else
+      plan_log "Would skip Docker install on $ROLE"
+    fi
+    plan_log "Would run ops/install_python.sh"
+    plan_log "Would bootstrap git LFS artifacts"
+    plan_log "Would create runtime directories via ops/setup_dirs.sh"
+    return
+  fi
+
   if [[ $RUN_APT -eq 1 ]]; then
     "$REPO_ROOT/ops/preflight.sh"
     # Docker only on swarm nodes
@@ -132,6 +160,10 @@ foundation(){
 
 install_node_exporter_if_server1(){
   if [[ "$ROLE" == "server1" ]]; then
+    if [[ "${PLAN_MODE}" == "1" ]]; then
+      plan_log "Would install node exporter via monitoring/install/install-node-exporter.sh"
+      return
+    fi
     "$REPO_ROOT/monitoring/install/install-node-exporter.sh" || true
   else
     echo "[node-exporter] skipped on $ROLE (runs via Swarm stack)"
@@ -141,6 +173,10 @@ install_node_exporter_if_server1(){
 ensure_clickhouse_log_dirs(){
   if [[ "$ROLE" != "server1" ]]; then return; fi
   local user="clickhouse" group="clickhouse"
+  if [[ "${PLAN_MODE}" == "1" ]]; then
+    plan_log "Would ensure ClickHouse log dirs owned by $user:$group"
+    return
+  fi
   for d in /var/log/clickhouse-server /var/log/clickhouse-keeper; do
     mkdir -p "$d"; chown -R "$user:$group" "$d" || true; chmod 755 "$d"
   done
@@ -148,6 +184,11 @@ ensure_clickhouse_log_dirs(){
 
 kafka_dirs_and_render_if_server3(){
   if [[ "$ROLE" == "server3" ]]; then
+    if [[ "${PLAN_MODE}" == "1" ]]; then
+      plan_log "Would create Kafka/ZooKeeper data dirs"
+      plan_log "Would render Kafka stack configs"
+      return
+    fi
     mkdir -p "${ZK_DATA:-/opt/sharpe10/data/zookeeper}" "${KAFKA_DATA:-/opt/sharpe10/data/kafka}"
     chmod 755 "${ZK_DATA:-/opt/sharpe10/data/zookeeper}" "${KAFKA_DATA:-/opt/sharpe10/data/kafka}"
     "${REPO_ROOT}/kafka/install/render-kafka.sh"
@@ -156,6 +197,12 @@ kafka_dirs_and_render_if_server3(){
 
 join_swarm_if_server3(){
   if [[ "$ROLE" != "server3" ]]; then return; fi
+
+  if [[ "${PLAN_MODE}" == "1" ]]; then
+    plan_log "Would evaluate Docker Swarm membership for server3"
+    plan_log "Would join Swarm using tokens from $SWARM_TOKENS_FILE if needed"
+    return
+  fi
 
   local state
   state="$(docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null || echo "inactive")"
@@ -186,6 +233,11 @@ wait_for_swarm_worker(){
   local timeout="${SWARM_JOIN_WAIT_SECS:-120}"
   local interval=5 elapsed=0
 
+  if [[ "${PLAN_MODE}" == "1" ]]; then
+    plan_log "Would wait for Swarm worker '$target' to be ready (timeout=${timeout}s)"
+    return 0
+  fi
+
   if docker node inspect "$target" >/dev/null 2>&1; then
     local status
     status="$(docker node inspect -f '{{.Status.State}}' "$target" 2>/dev/null || echo "unknown")"
@@ -214,6 +266,11 @@ wait_for_swarm_worker(){
 }
 
 deploy_kafka_stack_from_manager(){
+  if [[ "${PLAN_MODE}" == "1" ]]; then
+    plan_log "Would deploy Kafka stack from Swarm manager"
+    return
+  fi
+
   if wait_for_swarm_worker; then
     "${REPO_ROOT}/kafka/install/deploy-kafka-stack.sh"
   else
@@ -224,26 +281,48 @@ deploy_kafka_stack_from_manager(){
 deploy_by_role(){
   case "$ROLE" in
     server2)  # Swarm manager + monitoring
-      "$REPO_ROOT/ops/init_swarm.sh"            # uses $SWARM_OVERLAY_NAME (default external-connect-overlay)
-      "$REPO_ROOT/ops/label_swarm_nodes.sh" --env-file "$ENV_FILE"
-      "${REPO_ROOT}/monitoring/render-monitoring.sh"
-      docker stack deploy -c monitoring/configs/monitoring.stack.yml s10-monitoring
-      deploy_kafka_stack_from_manager
+      if [[ "${PLAN_MODE}" == "1" ]]; then
+        plan_log "Would init Swarm via ops/init_swarm.sh"
+        plan_log "Would label Swarm nodes with ops/label_swarm_nodes.sh --env-file $ENV_FILE"
+        plan_log "Would render monitoring configs"
+        plan_log "Would deploy monitoring stack: docker stack deploy -c monitoring/configs/monitoring.stack.yml s10-monitoring"
+        plan_log "Would deploy Kafka stack from manager"
+      else
+        "$REPO_ROOT/ops/init_swarm.sh"            # uses $SWARM_OVERLAY_NAME (default external-connect-overlay)
+        "$REPO_ROOT/ops/label_swarm_nodes.sh" --env-file "$ENV_FILE"
+        "${REPO_ROOT}/monitoring/render-monitoring.sh"
+        docker stack deploy -c monitoring/configs/monitoring.stack.yml s10-monitoring
+        deploy_kafka_stack_from_manager
+      fi
       ;;
     server3)  # Kafka/ZK/Connect host
       kafka_dirs_and_render_if_server3
       ;;
     server1)  # ClickHouse bare metal
-      ensure_clickhouse_log_dirs
-      args=( ); [[ -n "$KEEPER_ID" ]] && args+=( --keeper-id "$KEEPER_ID" )
-      "${REPO_ROOT}/clickhouse/setup_local.sh" "${args[@]}" --env-file "$ENV_FILE"
+      if [[ "${PLAN_MODE}" == "1" ]]; then
+        plan_log "Would ensure ClickHouse log directories exist"
+        if [[ -n "$KEEPER_ID" ]]; then
+          plan_log "Would run clickhouse/setup_local.sh --keeper-id $KEEPER_ID --env-file $ENV_FILE"
+        else
+          plan_log "Would run clickhouse/setup_local.sh --env-file $ENV_FILE"
+        fi
+      else
+        ensure_clickhouse_log_dirs
+        args=( ); [[ -n "$KEEPER_ID" ]] && args+=( --keeper-id "$KEEPER_ID" )
+        "${REPO_ROOT}/clickhouse/setup_local.sh" "${args[@]}" --env-file "$ENV_FILE"
+      fi
       ;;
     *) echo "Unknown role: $ROLE"; exit 1 ;;
   esac
 
   # host-side setups that apply everywhere (venv, configs, etc.)
-  "${REPO_ROOT}/monitoring/setup_local.sh" --env-file "$ENV_FILE"
-  "${REPO_ROOT}/validation/setup_local.sh" --env-file "$ENV_FILE"
+  if [[ "${PLAN_MODE}" == "1" ]]; then
+    plan_log "Would run monitoring/setup_local.sh --env-file $ENV_FILE"
+    plan_log "Would run validation/setup_local.sh --env-file $ENV_FILE"
+  else
+    "${REPO_ROOT}/monitoring/setup_local.sh" --env-file "$ENV_FILE"
+    "${REPO_ROOT}/validation/setup_local.sh" --env-file "$ENV_FILE"
+  fi
 }
 
 main(){
@@ -254,6 +333,10 @@ main(){
   install_node_exporter_if_server1
   join_swarm_if_server3
   deploy_by_role
-  echo "Bootstrap complete on $(hostname -s) for role=$ROLE"
+  if [[ "${PLAN_MODE}" == "1" ]]; then
+    plan_log "Bootstrap dry run complete on $(hostname -s) for role=$ROLE"
+  else
+    echo "Bootstrap complete on $(hostname -s) for role=$ROLE"
+  fi
 }
 main "$@"

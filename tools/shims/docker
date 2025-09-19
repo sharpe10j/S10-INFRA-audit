@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+shim_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ "${PLAN_MODE:-0}" == "1" ]]; then
+  echo "[plan:docker] docker $*"
+  exit 0
+fi
+
+echo "[plan:docker] PLAN_MODE not set but shim in PATH; falling back to real docker" >&2
+for dir in ${PATH//:/ }; do
+  [[ "$dir" == "$shim_dir" ]] && continue
+  if [[ -x "$dir/docker" ]]; then
+    exec "$dir/docker" "$@"
+  fi
+  # handle macOS docker symlink names if present (unlikely here)
+  if [[ -x "$dir/docker.exe" ]]; then
+    exec "$dir/docker.exe" "$@"
+  fi
+  if [[ -x "$dir/docker.cmd" ]]; then
+    exec "$dir/docker.cmd" "$@"
+  fi
+done
+
+echo "docker command not found" >&2
+exit 127

@@ -4,6 +4,7 @@ SHELL := /usr/bin/env bash
 # --- Env vars (add) ---
 ENV_NAME ?= dev
 ROLE     ?= server1
+KEEPER_ID ?=
 
 ENV_FILE       ?= envs/$(ENV_NAME).env
 ROLE_ENV_FILE  ?= envs/$(ROLE)/$(ENV_NAME).env
@@ -90,3 +91,6 @@ smoke: ## run smoke checks per ROLE; mock mode validates vars only
 down: ## remove stacks (local only)
 	docker stack rm $${MON_STACK_NAME:-s10-monitoring} || true
 	docker stack rm s10-kafka || true
+.PHONY: plan
+plan: ## dry-run bootstrap (ROLE=server1|server2|server3, optional KEEPER_ID for server1)
+	./tools/plan_server.sh --role $(ROLE) $(if $(KEEPER_ID),--keeper-id $(KEEPER_ID))
