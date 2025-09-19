@@ -9,20 +9,51 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"            # clickhouse/configs
 SRC_BASE="$BASE_DIR/base"                           # has your full config.xml & users.xml
 TMPL_DIR="$BASE_DIR/config-templates"
+REPO_ROOT_LOCAL="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+FALLBACK_ENV_BASE="$REPO_ROOT_LOCAL/envs/dev.env"
+ROLE_DEFAULT="server1"
+ROLE_FROM_ENV="${ROLE:-}"
 
 # Where to write the generated files that CH/Keeper actually read
 # Tip: set DST_DIR=/etc/clickhouse-server when you deploy
 DST_DIR="${DST_DIR:-/home/jake_morrison/clickhouse_binaries}"
 
 # ---- env load + defaults ----
-if [[ -f "$ENV_FILE" ]]; then set -a; . "$ENV_FILE"; set +a; fi
+set -a
+if [[ -f "$ENV_FILE" ]]; then
+  . "$ENV_FILE"
+else
+  echo "WARN: $ENV_FILE not found; falling back to repo defaults." >&2
+  if [[ -f "$FALLBACK_ENV_BASE" ]]; then
+    . "$FALLBACK_ENV_BASE"
+  else
+    set +a
+    echo "ERROR: fallback env $FALLBACK_ENV_BASE is missing" >&2
+    exit 1
+  fi
+
+  FALLBACK_ROLE="${ROLE_FROM_ENV:-$ROLE_DEFAULT}"
+  FALLBACK_ROLE_ENV="$REPO_ROOT_LOCAL/envs/${FALLBACK_ROLE}/dev.env"
+  if [[ -f "$FALLBACK_ROLE_ENV" ]]; then
+    . "$FALLBACK_ROLE_ENV"
+  else
+    echo "INFO: role env $FALLBACK_ROLE_ENV not found; continuing with base defaults." >&2
+  fi
+fi
+set +a
+
+: "${REPO_ROOT:=$REPO_ROOT_LOCAL}"
 
 CH_PORT="${CH_PORT:-9000}"
 CH_HTTP_PORT="${CH_HTTP_PORT:-8123}"
 
 KEEPER_CLIENT_PORT="${KEEPER_CLIENT_PORT:-9181}"
 KEEPER_RAFT_PORT="${KEEPER_RAFT_PORT:-9234}"
-: "${KEEPER_SERVER_ID:?Set KEEPER_SERVER_ID=1|2 (or 3 if you add a third Keeper) before running}"
+: "${KEEPER_SERVER_ID:=1}"
+if [[ -z "$KEEPER_SERVER_ID" ]]; then
+  echo "ERROR: KEEPER_SERVER_ID must be set (1|2|3)." >&2
+  exit 1
+fi
 : "${SERVER1_HOST:?must be set}"
 : "${SERVER2_HOST:?must be set}"
 # SERVER3_HOST optional today
@@ -41,13 +72,13 @@ echo "[x/4] Render zookeeper.xml from template"
 export SERVER1_HOST SERVER2_HOST KEEPER_CLIENT_PORT
 envsubst < "$TMPL_DIR/zookeeper.tmpl.xml" > "$DST_DIR/zookeeper.xml"
 
+echo "[3/4] Generate config.xml from your base/config.xml with env overrides"
+cp -f "$SRC_BASE/config.xml" "$DST_DIR/config.xml"
+
 # Remove any existing <zookeeper> block then include the template
 sed -i -E 's#<zookeeper>(.|\n)*?</zookeeper>##g' "$DST_DIR/config.xml"
 grep -q '<zookeeper .*incl=' "$DST_DIR/config.xml" || \
   sed -i -E 's#</clickhouse>#  <zookeeper incl="zookeeper.xml"/>\n</clickhouse>#' "$DST_DIR/config.xml"
-
-echo "[3/4] Generate config.xml from your base/config.xml with env overrides"
-cp -f "$SRC_BASE/config.xml" "$DST_DIR/config.xml"
 
 # Replace tcp/http ports
 sed -i -E \

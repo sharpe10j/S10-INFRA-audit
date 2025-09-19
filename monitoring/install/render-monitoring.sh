@@ -12,17 +12,42 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TPL_DIR="${REPO_ROOT}/monitoring/templates"
-OUT_DIR="${REPO_ROOT}/monitoring/configs"
+REPO_ROOT_LOCAL="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+TPL_DIR="${REPO_ROOT_LOCAL}/monitoring/templates"
+OUT_DIR="${REPO_ROOT_LOCAL}/monitoring/configs"
 
 # Load env (and optional overlays)
-ENV_DIR_RUNTIME="/etc/sharpe10"
+ENV_DIR_RUNTIME="$(dirname "${ENV_FILE}")"
+FALLBACK_ENV_BASE="${REPO_ROOT_LOCAL}/envs/dev.env"
+ROLE_DEFAULT="server2"
+ROLE_FROM_ENV="${ROLE:-}"
+
 set -a
-. "${ENV_FILE}"
-[[ -f "${ENV_DIR_RUNTIME}/dev.secrets" ]] && . "${ENV_DIR_RUNTIME}/dev.secrets"
-[[ -f "${ENV_DIR_RUNTIME}/dev.local"   ]] && . "${ENV_DIR_RUNTIME}/dev.local"
+if [[ -f "${ENV_FILE}" ]]; then
+  . "${ENV_FILE}"
+  [[ -f "${ENV_DIR_RUNTIME}/dev.secrets" ]] && . "${ENV_DIR_RUNTIME}/dev.secrets"
+  [[ -f "${ENV_DIR_RUNTIME}/dev.local"   ]] && . "${ENV_DIR_RUNTIME}/dev.local"
+else
+  echo "WARN: ${ENV_FILE} not found; falling back to repo defaults." >&2
+  if [[ -f "${FALLBACK_ENV_BASE}" ]]; then
+    . "${FALLBACK_ENV_BASE}"
+  else
+    set +a
+    echo "ERROR: fallback env ${FALLBACK_ENV_BASE} is missing" >&2
+    exit 1
+  fi
+
+  FALLBACK_ROLE="${ROLE_FROM_ENV:-${ROLE_DEFAULT}}"
+  FALLBACK_ROLE_ENV="${REPO_ROOT_LOCAL}/envs/${FALLBACK_ROLE}/dev.env"
+  if [[ -f "${FALLBACK_ROLE_ENV}" ]]; then
+    . "${FALLBACK_ROLE_ENV}"
+  else
+    echo "INFO: role env ${FALLBACK_ROLE_ENV} not found; continuing with base defaults." >&2
+  fi
+fi
 set +a
+
+: "${REPO_ROOT:=$REPO_ROOT_LOCAL}"
 
 # Defaults (only used if not set in env)
 : "${PROM_ROOT:=/opt/prometheus}"
