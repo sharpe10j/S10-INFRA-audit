@@ -49,6 +49,70 @@ load_env(){
   set +a
 }
 
+get_repo_owner(){
+  if owner="$(stat -c '%U' "$REPO_ROOT" 2>/dev/null)"; then
+    echo "$owner"
+  elif [[ -n "${SUDO_USER:-}" ]]; then
+    echo "$SUDO_USER"
+  else
+    id -un
+  fi
+}
+
+run_as_user(){
+  local user="$1"
+  shift || true
+  if [[ -z "$user" || "$user" == "$(id -un)" ]]; then
+    "$@"
+  elif command -v runuser >/dev/null 2>&1; then
+    runuser -u "$user" -- "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo -u "$user" -- "$@"
+  else
+    echo "[git-lfs] unable to switch to user '$user' for command: $*" >&2
+    return 1
+  fi
+}
+
+bootstrap_git_lfs(){
+  local marker="/var/lib/sharpe10/git-lfs-bootstrap.done"
+  local artifact="$REPO_ROOT/clickhouse/artifacts/clickhouse"
+
+  if [[ -f "$marker" && -f "$artifact" ]]; then
+    echo "[git-lfs] artifacts already prepared (marker: $marker)"
+    return
+  fi
+
+  if [[ -f "$marker" && ! -f "$artifact" ]]; then
+    echo "[git-lfs] marker present but artifact missing; re-fetching"
+    rm -f "$marker"
+  fi
+
+  if ! git lfs version >/dev/null 2>&1; then
+    if [[ ${RUN_APT:-1} -eq 0 ]]; then
+      echo "[git-lfs] git-lfs not available; skipping pull because --no-apt was used" >&2
+      return
+    fi
+    echo "[git-lfs] git-lfs missing after package install" >&2
+    exit 1
+  fi
+
+  mkdir -p "$(dirname "$marker")"
+  local owner
+  owner="$(get_repo_owner)"
+
+  run_as_user "$owner" git -C "$REPO_ROOT" lfs install --local
+  run_as_user "$owner" git -C "$REPO_ROOT" lfs pull
+
+  if [[ ! -f "$artifact" ]]; then
+    echo "[git-lfs] expected artifact missing at $artifact" >&2
+    exit 1
+  fi
+
+  touch "$marker"
+  echo "[git-lfs] artifacts synced to $artifact"
+}
+
 foundation(){
   if [[ $RUN_APT -eq 1 ]]; then
     "$REPO_ROOT/ops/preflight.sh"
@@ -62,6 +126,7 @@ foundation(){
   else
     echo "[apt] skipped by flag"
   fi
+  bootstrap_git_lfs
   "$REPO_ROOT/ops/setup_dirs.sh"
 }
 

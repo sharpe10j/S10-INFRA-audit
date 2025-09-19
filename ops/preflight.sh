@@ -4,6 +4,7 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get upgrade -y
-apt-get install -y ca-certificates curl gnupg lsb-release git jq unzip tar chrony
+apt-get install -y ca-certificates curl gnupg lsb-release git jq unzip tar chrony \
+  gettext-base git-lfs
 timedatectl set-ntp true || true
 echo "[preflight] ok"
