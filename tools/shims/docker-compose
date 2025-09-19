@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+shim_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ "${PLAN_MODE:-0}" == "1" ]]; then
+  echo "[plan:docker] docker-compose $*"
+  exit 0
+fi
+
+echo "[plan:docker] PLAN_MODE not set but shim in PATH; falling back to real docker-compose" >&2
+for dir in ${PATH//:/ }; do
+  [[ "$dir" == "$shim_dir" ]] && continue
+  if [[ -x "$dir/docker-compose" ]]; then
+    exec "$dir/docker-compose" "$@"
+  fi
+done
+
+echo "docker-compose command not found" >&2
+exit 127
